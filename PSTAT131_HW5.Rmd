@@ -1,0 +1,135 @@
+---
+title: "PSTAT 131 HW 5"
+author: "Jay Shreedhar"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+
+set.seed(3945)
+library(tidymodels)
+library(tidyverse)
+library(ISLR)
+library(ISLR2)
+library(MASS)
+library(klaR)
+library(dplyr)
+library(discrim)
+library(janitor)
+library(ggplot2)
+setwd("/Users/shobhanashreedhar/Downloads/homework-5/data")
+pokemon <- read_csv("Pokemon.csv")
+
+
+```
+<br /><br />
+**Question 1:**<br />
+```{r}
+
+pokemon <- clean_names(pokemon)
+
+
+```
+The columns were renamed to properly formatted titles, such as "Number" becoming "#" and "sp_atk" becoming "Sp. Atk". This makes it a lot easier to read the data.
+<br /><br />
+**Question 2:**<br />
+```{r}
+
+type1counts <- table(pokemon$type_1)
+barplot(sort(type1counts, decreasing = T), main="Primary Type", col="skyblue")
+
+```
+<br />There are 18 classes. Ice, Fairy, and Flying are the rarest types.<br />
+```{r}
+
+pkmn <- pokemon %>% filter(type_1=="Bug" | type_1=="Fire" | type_1=="Water" | type_1=="Grass" | type_1=="Normal" | type_1=="Psychic")
+pkmn$type_1 <- factor(pkmn$type_1)
+pkmn$legendary <- factor(pkmn$legendary)
+pkmn$generation <- factor(pkmn$generation)
+
+```
+<br /><br />
+**Question 3:**<br />
+```{r}
+
+pkmn_split <- initial_split(pkmn, prop = 0.7, strata=type_1)
+pkmn_train <- training(pkmn_split)
+pkmn_test <- testing(pkmn_split)
+pkmn_fold <- vfold_cv(pkmn_train, v=5, strata = type_1)
+
+```
+<br /><br />
+**Question 4:**<br />
+```{r}
+
+pkmn_recipe <- 
+  recipe(type_1 ~ legendary + generation + sp_atk + attack + speed + defense + hp + sp_def, data=pkmn_train) %>%
+  step_dummy(legendary) %>% step_dummy(generation) %>% 
+  step_center(all_predictors()) %>% step_scale(all_predictors())
+
+```
+
+<br /><br />
+**Question 5:**<br />
+```{r}
+
+pkmn_spec <- 
+  multinom_reg(penalty = tune(), mixture = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet") 
+
+pkmn_wkflw <- workflow() %>% 
+  add_recipe(pkmn_recipe) %>% 
+  add_model(pkmn_spec)
+
+pen_mix_grid <- grid_regular(penalty(range = c(-5, 5)), mixture(range = c(0, 1)), levels = 10)
+
+```
+I will be fitting a total of 500 models.
+<br /><br />
+**Question 6:**<br />
+```{r}
+
+tune_res <- tune_grid(
+  pkmn_wkflw,
+  resamples = pkmn_fold,
+  grid = pen_mix_grid
+)
+
+autoplot(tune_res)
+
+```
+<br />Smaller values of `penalty` produce better accuracy and ROC AUC. 
+<br /><br />
+**Question 7:**<br />
+```{r}
+
+bestval <- select_best(tune_res, metric = "roc_auc")
+pkmn_final <- finalize_workflow(pkmn_wkflw, bestval)
+
+pkmn_final_fit <- fit(pkmn_final, data = pkmn_train)
+
+augment(pkmn_final_fit, new_data = pkmn_test) %>% accuracy(truth=type_1, estimate=.pred_class)
+
+```
+<br />Accuracy is only 0.34285. I assume this is because some of the predictors don't actually have anything to do with a Pokemon's type, such as generation.
+<br /><br />
+**Question 8:**<br />
+```{r}
+
+augment(pkmn_final_fit, new_data = pkmn_test) %>% roc_curve(type_1, estimate=c(.pred_Bug, .pred_Fire, .pred_Water, .pred_Grass, .pred_Normal, .pred_Psychic)) %>% autoplot()
+
+augment(pkmn_final_fit, new_data = pkmn_test) %>%
+  conf_mat(truth = type_1, estimate = .pred_class) %>% autoplot(type="heatmap")
+
+```
+<br />According to the ROC curve, my model did decently well with the Bug type and extremely badly with all others. This is probably because the Bug type has the worst stats out of any of these types, so it is strongly associated with lower Attack, Defense, Speed, etc. 
+<br />According to the heatmap, my model did well with predicting the Normal and Water types. This is likely because these two types are by far the most common out of the six selected.
+
